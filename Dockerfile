@@ -6,10 +6,11 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy dependency files first for layer caching
-COPY pyproject.toml .
+COPY pyproject.toml uv.lock .
 
-# Install dependencies into the system Python (no venv needed in container)
-RUN uv pip install --system --no-cache -r pyproject.toml
+# Export locked deps to pip format, then install
+RUN uv export --frozen --no-dev --no-hashes -o /tmp/requirements.txt && \
+    uv pip install --system --no-cache -r /tmp/requirements.txt
 
 # Copy application code
 COPY main.py .

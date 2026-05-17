@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 import aiohttp
 import websockets
-from questdb.ingress import Sender, Protocol, TimestampNanos
+from questdb.ingress import Sender, TimestampNanos
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -184,7 +184,8 @@ async def _ws_worker(worker_id: str, ws_url: str, streams: list,
     host, port, user, password = qdb_config
     rows_ingested = 0
 
-    with Sender(Protocol.Http, host, port, username=user, password=password) as sender:
+    conf = f"http::addr={host}:{port};username={user};password={password};"
+    with Sender.from_conf(conf) as sender:
         while True:
             try:
                 async with websockets.connect(ws_url) as ws:
