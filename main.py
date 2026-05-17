@@ -54,8 +54,8 @@ def _kline_parser(interval: str) -> Callable:
                 'taker_volume':    float(k['V']),
                 'taker_quote_volume': float(k['Q']),
                 'trades':          int(k['n']),
-                'open_time':       int(k['t']) * 1_000,  # ms → us (QuestDB TIMESTAMP is microseconds)
-                'close_time':      int(k['T']) * 1_000,  # ms → us
+                'open_time':       datetime.fromtimestamp(int(k['t']) / 1000, tz=timezone.utc),
+                'close_time':      datetime.fromtimestamp(int(k['T']) / 1000, tz=timezone.utc),
             },
         )
     return parser
@@ -184,9 +184,10 @@ async def _ws_worker(worker_id: str, ws_url: str, streams: list,
     host, port, user, password = qdb_config
     rows_ingested = 0
 
-    # auto_flush_rows=200: flush every 200 rows; interval-based flushing disabled.
+    # Flush when 100 rows accumulate OR when the next row arrives >1 s after the last flush.
+    # The interval check is triggered on each sender.row() call (no background timer).
     conf = (f"http::addr={host}:{port};username={user};password={password};"
-            f"auto_flush_rows=200;auto_flush_interval=off;")
+            f"auto_flush_rows=100;auto_flush_interval=1000;")
     with Sender.from_conf(conf) as sender:
         while True:
             try:
