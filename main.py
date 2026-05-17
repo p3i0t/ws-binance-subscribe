@@ -184,16 +184,18 @@ async def _ws_worker(worker_id: str, ws_url: str, streams: list,
     host, port, user, password = qdb_config
     rows_ingested = 0
 
-    conf = f"http::addr={host}:{port};username={user};password={password};"
+    # auto_flush_rows=200: flush every 200 rows; interval-based flushing disabled.
+    conf = (f"http::addr={host}:{port};username={user};password={password};"
+            f"auto_flush_rows=200;auto_flush_interval=off;")
     with Sender.from_conf(conf) as sender:
         while True:
             try:
                 async with websockets.connect(ws_url) as ws:
                     for i in range(0, len(streams), _SUB_BATCH):
-                        batch = streams[i:i + _SUB_BATCH]
+                        sub_batch = streams[i:i + _SUB_BATCH]
                         await ws.send(json.dumps({
                             "method": "SUBSCRIBE",
-                            "params": batch,
+                            "params": sub_batch,
                             "id":     abs(hash(worker_id)) % 10_000 + i,
                         }))
                     logger.info(f"[{worker_id}] Subscribed to {len(streams)} streams.")
@@ -202,6 +204,7 @@ async def _ws_worker(worker_id: str, ws_url: str, streams: list,
 
                     while True:
                         if asyncio.get_event_loop().time() >= deadline:
+                            sender.flush()  # flush partial batch before reconnect
                             logger.info(f"[{worker_id}] 23 h elapsed, reconnecting.")
                             break
 
@@ -216,16 +219,23 @@ async def _ws_worker(worker_id: str, ws_url: str, streams: list,
                                     table, syms, cols = row
                                     sender.row(table, symbols=syms, columns=cols,
                                                at=TimestampNanos.now())
-                                    sender.flush()
                                     rows_ingested += 1
                                     if rows_ingested % 10_000 == 0:
                                         logger.info(f"[{worker_id}] {rows_ingested} rows ingested.")
                                 break  # each event belongs to at most one channel
 
             except websockets.exceptions.ConnectionClosed as e:
+                try:
+                    sender.flush()
+                except Exception:
+                    pass
                 logger.warning(f"[{worker_id}] Connection lost ({e}). Reconnecting in 5s...")
                 await asyncio.sleep(5)
             except Exception as e:
+                try:
+                    sender.flush()
+                except Exception:
+                    pass
                 logger.error(f"[{worker_id}] Unexpected error: {e}. Retrying in 5s...")
                 await asyncio.sleep(5)
 
