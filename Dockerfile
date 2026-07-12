@@ -7,14 +7,13 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock .
+# Copy application code (needed for package install)
+COPY binance_live_ingestor/ ./binance_live_ingestor/
 
-# Export locked deps to pip format, then install
-RUN uv export --frozen --no-dev --no-hashes -o /tmp/requirements.txt && \
-    uv pip install --system --no-cache -r /tmp/requirements.txt
-
-# Copy application code
-COPY main.py .
+# Install the project (deps + console script entry point)
+RUN uv pip install --system --no-cache .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "main.py"]
+ENTRYPOINT ["binance-live-ingestor"]
+CMD []

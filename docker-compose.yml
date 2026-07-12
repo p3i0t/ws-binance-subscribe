@@ -3,3 +3,8 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      BACKFILL_DAYS: "3"
+      BACKFILL_CONCURRENCY: "5"
+      BACKFILL_LIMIT: "1000"
+      KLINE_INTERVAL: "5m"

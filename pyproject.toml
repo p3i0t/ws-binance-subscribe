@@ -1,11 +1,19 @@
 [project]
-name = "binance-subscribe"
+name = "binance-live-ingestor"
 version = "0.1.0"
-description = "Add your description here"
+description = "Subscribe to Binance klines and ingest into QuestDB."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.5",
+    "typer>=0.15.0",
     "questdb>=4.1.0",
     "websockets>=16.0",
 ]
+
+[project.scripts]
+binance-live-ingestor = "binance_live_ingestor:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
