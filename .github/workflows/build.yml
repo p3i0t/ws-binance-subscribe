@@ -53,13 +53,13 @@ jobs:
           path: dist
 
       - name: Install wheel
-        run: pip install dist/*.whl
+        run: pip install --find-links=dist binance-live-ingestor
 
       - name: Verify import
         run: python -c "import binance_live_ingestor; print('import OK')"
 
       - name: Verify CLI entry point
-        shell: bash
         run: |
           binance-live-ingestor --help
           echo "CLI OK"
+        shell: bash
