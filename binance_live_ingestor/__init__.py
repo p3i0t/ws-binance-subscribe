@@ -103,15 +103,25 @@ def _sender_conf():
             f"auto_flush_rows=100;auto_flush_interval=1000;")
 
 
-async def ensure_table():
-    """Create the binance_klines table with WAL + dedup if it doesn't exist."""
+async def ensure_table(ttl_days: int = 0):
+    """Create the binance_klines table with WAL + dedup, optionally set TTL."""
     async with aiohttp.ClientSession() as session:
         params = {**_qdb_auth_params(), 'query': _TABLE_DDL}
         async with session.get(_qdb_exec_url(), params=params) as resp:
             if resp.status != 200:
                 raise RuntimeError(
                     f"QuestDB DDL failed ({resp.status}): {await resp.text()}")
-            logger.info("QuestDB table 'binance_klines' ready (WAL + DEDUP).")
+        extra = ""
+        if ttl_days > 0:
+            ttl_sql = f"ALTER TABLE binance_klines SET TTL {ttl_days} DAY"
+            ttl_params = {**_qdb_auth_params(), 'query': ttl_sql}
+            async with session.get(_qdb_exec_url(), params=ttl_params) as r:
+                if r.status != 200:
+                    logger.warning("SET TTL failed (%d): %s",
+                                   r.status, await r.text())
+                else:
+                    extra = f", TTL={ttl_days}d"
+        logger.info("QuestDB table 'binance_klines' ready (WAL + DEDUP%s).", extra)
 
 
 async def get_latest_timestamps(interval: str) -> dict:
@@ -585,6 +595,11 @@ def run(
     questdb_port: int = typer.Option(QUESTDB_HTTP_PORT,   '--questdb-port'),
     questdb_user: str = typer.Option(QUESTDB_USER,        '--questdb-user'),
     questdb_password: str = typer.Option(QUESTDB_PASSWORD, '--questdb-password'),
+    ttl_days: int = typer.Option(
+        int(os.environ.get('TTL_DAYS', '10')),
+        '--ttl-days',
+        help='Auto-expire data older than N days (0 = disable).',
+    ),
 ):
     """Start ingesting Binance klines into QuestDB."""
     global QUESTDB_HOST, QUESTDB_HTTP_PORT, QUESTDB_USER, QUESTDB_PASSWORD
@@ -596,13 +611,14 @@ def run(
     asyncio.run(_async_run(
         market.value, symbols, interval.value,
         backfill_days, backfill_concurrency, backfill_limit, backfill,
+        ttl_days,
     ))
 
 
 async def _async_run(market, symbols, interval,
                      backfill_days, backfill_concurrency,
-                     backfill_limit, do_backfill):
-    await ensure_table()
+                     backfill_limit, do_backfill, ttl_days=0):
+    await ensure_table(ttl_days=ttl_days)
 
     sym_list = (symbols.split(',') if symbols != 'all' else 'all')
     channel = _CHANNELS[interval]
