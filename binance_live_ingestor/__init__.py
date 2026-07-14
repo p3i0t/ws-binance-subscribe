@@ -106,8 +106,8 @@ def _sender_conf():
 async def ensure_table():
     """Create the binance_klines table with WAL + dedup if it doesn't exist."""
     async with aiohttp.ClientSession() as session:
-        async with session.post(_qdb_exec_url(), params=_qdb_auth_params(),
-                                data=_TABLE_DDL) as resp:
+        params = {**_qdb_auth_params(), 'query': _TABLE_DDL}
+        async with session.get(_qdb_exec_url(), params=params) as resp:
             if resp.status != 200:
                 raise RuntimeError(
                     f"QuestDB DDL failed ({resp.status}): {await resp.text()}")
@@ -116,13 +116,13 @@ async def ensure_table():
 
 async def get_latest_timestamps(interval: str) -> dict:
     """Return {symbol: epoch_ms} for the latest kline per symbol."""
-    query = (f"SELECT symbol, to_millis(max(ts)) "
+    query = (f"SELECT symbol, cast(max(ts) as long) / 1000 "
              f"FROM binance_klines WHERE kline_interval = '{interval}' "
              f"GROUP BY symbol")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(_qdb_exec_url(), params=_qdb_auth_params(),
-                                    data=query) as resp:
+            params = {**_qdb_auth_params(), 'query': query}
+            async with session.get(_qdb_exec_url(), params=params) as resp:
                 if resp.status != 200:
                     logger.warning("get_latest_timestamps: HTTP %d", resp.status)
                     return {}
