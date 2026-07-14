@@ -1,11 +1,12 @@
 -- QuestDB schema for Binance klines.
--- This is created automatically by main.py on startup via ensure_table().
+-- Tables are created automatically by binance-live-ingestor on startup.
+-- Each interval gets its own table: binance_klines_1m, binance_klines_5m.
 -- Provided here for manual reference / inspection.
 
-CREATE TABLE IF NOT EXISTS binance_klines (
-    ts              TIMESTAMP,          -- designated timestamp (= kline open time)
+-- For 5m klines (repeat with _1m for 1m):
+CREATE TABLE IF NOT EXISTS binance_klines_5m (
+    ts              TIMESTAMP,          -- designated timestamp (= close_time)
     symbol          SYMBOL CAPACITY 1000,
-    kline_interval  SYMBOL,            -- e.g. '5m', '1h'
     open            DOUBLE,
     high            DOUBLE,
     low             DOUBLE,
@@ -19,4 +20,4 @@ CREATE TABLE IF NOT EXISTS binance_klines (
 ) TIMESTAMP(ts)
 PARTITION BY DAY
 WAL
-DEDUP UPSERT KEYS(ts, symbol, kline_interval);
+DEDUP UPSERT KEYS(ts, symbol);

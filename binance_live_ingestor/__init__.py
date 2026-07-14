@@ -2,7 +2,7 @@
 Binance klines service.
 
 On startup:
-  1. Creates the ``binance_klines`` table (WAL + dedup) in QuestDB.
+  1. Creates the ``binance_klines_{interval}`` table (WAL + dedup) in QuestDB.
   2. Backfills up to N days of historical klines via Binance REST API.
   3. Subscribes to live klines via WebSocket and ingests closed bars.
 
@@ -68,25 +68,24 @@ def klines_weight(limit: int) -> int:
 
 # ─── QuestDB helpers ──────────────────────────────────────────────────────────
 
-_TABLE_DDL = """\
-CREATE TABLE IF NOT EXISTS binance_klines (
-    ts              TIMESTAMP,
-    symbol          SYMBOL CAPACITY 1000,
-    kline_interval  SYMBOL,
-    open            DOUBLE,
-    high            DOUBLE,
-    low             DOUBLE,
-    close           DOUBLE,
-    volume          DOUBLE,
-    close_time      LONG,
-    quote_volume    DOUBLE,
-    trades          LONG,
-    taker_buy_base  DOUBLE,
-    taker_buy_quote DOUBLE
-) TIMESTAMP(ts)
-PARTITION BY DAY
-WAL
-DEDUP UPSERT KEYS(ts, symbol, kline_interval)"""
+def _table_ddl(interval: str) -> str:
+    return (f"CREATE TABLE IF NOT EXISTS binance_klines_{interval} (\n"
+            f"    ts              TIMESTAMP,\n"
+            f"    symbol          SYMBOL CAPACITY 1000,\n"
+            f"    open            DOUBLE,\n"
+            f"    high            DOUBLE,\n"
+            f"    low             DOUBLE,\n"
+            f"    close           DOUBLE,\n"
+            f"    volume          DOUBLE,\n"
+            f"    close_time      LONG,\n"
+            f"    quote_volume    DOUBLE,\n"
+            f"    trades          LONG,\n"
+            f"    taker_buy_base  DOUBLE,\n"
+            f"    taker_buy_quote DOUBLE\n"
+            f") TIMESTAMP(ts)\n"
+            f"PARTITION BY DAY\n"
+            f"WAL\n"
+            f"DEDUP UPSERT KEYS(ts, symbol)")
 
 
 def _qdb_exec_url():
@@ -103,17 +102,19 @@ def _sender_conf():
             f"auto_flush_rows=100;auto_flush_interval=1000;")
 
 
-async def ensure_table(ttl_days: int = 0):
-    """Create the binance_klines table with WAL + dedup, optionally set TTL."""
+async def ensure_table(interval: str, ttl_days: int = 0):
+    """Create the interval-specific table with WAL + dedup, optionally set TTL."""
+    table = f"binance_klines_{interval}"
+    ddl = _table_ddl(interval)
     async with aiohttp.ClientSession() as session:
-        params = {**_qdb_auth_params(), 'query': _TABLE_DDL}
+        params = {**_qdb_auth_params(), 'query': ddl}
         async with session.get(_qdb_exec_url(), params=params) as resp:
             if resp.status != 200:
                 raise RuntimeError(
                     f"QuestDB DDL failed ({resp.status}): {await resp.text()}")
         extra = ""
         if ttl_days > 0:
-            ttl_sql = f"ALTER TABLE binance_klines SET TTL {ttl_days} DAY"
+            ttl_sql = f"ALTER TABLE {table} SET TTL {ttl_days} DAY"
             ttl_params = {**_qdb_auth_params(), 'query': ttl_sql}
             async with session.get(_qdb_exec_url(), params=ttl_params) as r:
                 if r.status != 200:
@@ -121,13 +122,14 @@ async def ensure_table(ttl_days: int = 0):
                                    r.status, await r.text())
                 else:
                     extra = f", TTL={ttl_days}d"
-        logger.info("QuestDB table 'binance_klines' ready (WAL + DEDUP%s).", extra)
+        logger.info("QuestDB table '%s' ready (WAL + DEDUP%s).", table, extra)
 
 
 async def get_latest_timestamps(interval: str) -> dict:
     """Return {symbol: epoch_ms} for the latest kline per symbol."""
+    table = f"binance_klines_{interval}"
     query = (f"SELECT symbol, cast(max(ts) as long) / 1000 "
-             f"FROM binance_klines WHERE kline_interval = '{interval}' "
+             f"FROM {table} "
              f"GROUP BY symbol")
     try:
         async with aiohttp.ClientSession() as session:
@@ -182,6 +184,7 @@ class Backfiller:
                  limit: int = 1000):
         self.klines_url = klines_url
         self.interval = interval
+        self.table = f"binance_klines_{interval}"
         self.iv_ms = interval_ms(interval)
         self.backfill_days = backfill_days
         self.rate_limiter = rate_limiter
@@ -214,7 +217,7 @@ class Backfiller:
                         return
                     rows = await self._fetch_symbol(session, sym, start, now_ms)
                     for row_ts, syms, cols in rows:
-                        sender.row('binance_klines', symbols=syms,
+                        sender.row(self.table, symbols=syms,
                                    columns=cols, at=TimestampNanos(row_ts))
                     rows_written += len(rows)
                     done += 1
@@ -272,7 +275,7 @@ class Backfiller:
                         continue  # skip still-forming bar (close_time in the future)
                     results.append((
                         close_ms * 1_000_000,
-                        {'symbol': symbol, 'kline_interval': self.interval},
+                        {'symbol': symbol},
                         {'open':             float(k[1]),
                          'high':             float(k[2]),
                          'low':              float(k[3]),
@@ -328,8 +331,8 @@ def _kline_parser(event: dict):
     if not k['x']:
         return None  # only store closed bars
     return (
-        'binance_klines',
-        {'symbol': k['s'], 'kline_interval': k['i']},
+        f"binance_klines_{k['i']}",
+        {'symbol': k['s']},
         {'open':             float(k['o']),
          'high':             float(k['h']),
          'low':              float(k['l']),
@@ -378,8 +381,6 @@ def _book_ticker_parser(event: dict):
 
 KLINE_1M    = Channel('market', '{symbol}@kline_1m',   _kline_parser, interval='1m')
 KLINE_5M    = Channel('market', '{symbol}@kline_5m',   _kline_parser, interval='5m')
-KLINE_15M   = Channel('market', '{symbol}@kline_15m',  _kline_parser, interval='15m')
-KLINE_1H    = Channel('market', '{symbol}@kline_1h',   _kline_parser, interval='1h')
 AGG_TRADE   = Channel('market', '{symbol}@aggTrade',   _agg_trade_parser)
 BOOK_TICKER = Channel('public', '{symbol}@bookTicker', _book_ticker_parser)
 
@@ -533,7 +534,7 @@ class FeedHandler:
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
-_CHANNELS = {'1m': KLINE_1M, '5m': KLINE_5M, '15m': KLINE_15M, '1h': KLINE_1H}
+_CHANNELS = {'1m': KLINE_1M, '5m': KLINE_5M}
 
 app = typer.Typer(
     name='binance-live-ingestor',
@@ -550,8 +551,6 @@ class MarketChoice(str, Enum):
 class IntervalChoice(str, Enum):
     m1  = '1m'
     m5  = '5m'
-    m15 = '15m'
-    h1  = '1h'
 
 
 @app.command()
@@ -618,7 +617,7 @@ def run(
 async def _async_run(market, symbols, interval,
                      backfill_days, backfill_concurrency,
                      backfill_limit, do_backfill, ttl_days=0):
-    await ensure_table(ttl_days=ttl_days)
+    await ensure_table(interval, ttl_days=ttl_days)
 
     sym_list = (symbols.split(',') if symbols != 'all' else 'all')
     channel = _CHANNELS[interval]
