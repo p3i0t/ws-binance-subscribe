@@ -20,7 +20,7 @@ import time
 import aiohttp
 import websockets
 import typer
-from questdb.ingress import Sender, TimestampNanos
+from questdb.ingress import Sender, TimestampMicros, TimestampNanos
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO,
@@ -70,22 +70,23 @@ def klines_weight(limit: int) -> int:
 
 def _table_ddl(interval: str) -> str:
     return (f"CREATE TABLE IF NOT EXISTS binance_klines_{interval} (\n"
-            f"    ts              TIMESTAMP,\n"
+            f"    timestamp       TIMESTAMP,\n"
             f"    symbol          SYMBOL CAPACITY 1000,\n"
             f"    open            DOUBLE,\n"
             f"    high            DOUBLE,\n"
             f"    low             DOUBLE,\n"
             f"    close           DOUBLE,\n"
             f"    volume          DOUBLE,\n"
-            f"    close_time      LONG,\n"
+            f"    open_time       TIMESTAMP,\n"
+            f"    close_time      TIMESTAMP,\n"
             f"    quote_volume    DOUBLE,\n"
             f"    trades          LONG,\n"
             f"    taker_buy_base  DOUBLE,\n"
             f"    taker_buy_quote DOUBLE\n"
-            f") TIMESTAMP(ts)\n"
+            f") TIMESTAMP(timestamp)\n"
             f"PARTITION BY DAY\n"
             f"WAL\n"
-            f"DEDUP UPSERT KEYS(ts, symbol)")
+            f"DEDUP UPSERT KEYS(timestamp, symbol)")
 
 
 def _qdb_exec_url():
@@ -128,7 +129,7 @@ async def ensure_table(interval: str, ttl_days: int = 0):
 async def get_latest_timestamps(interval: str) -> dict:
     """Return {symbol: epoch_ms} for the latest kline per symbol."""
     table = f"binance_klines_{interval}"
-    query = (f"SELECT symbol, cast(max(ts) as long) / 1000 "
+    query = (f"SELECT symbol, cast(max(timestamp) as long) / 1000 "
              f"FROM {table} "
              f"GROUP BY symbol")
     try:
@@ -281,7 +282,8 @@ class Backfiller:
                          'low':              float(k[3]),
                          'close':            float(k[4]),
                          'volume':           float(k[5]),
-                         'close_time':       int(k[6]),
+                         'open_time':        TimestampMicros(int(k[0]) * 1000),
+                         'close_time':       TimestampMicros(int(k[6]) * 1000),
                          'quote_volume':     float(k[7]),
                          'trades':           int(k[8]),
                          'taker_buy_base':   float(k[9]),
@@ -338,7 +340,8 @@ def _kline_parser(event: dict):
          'low':              float(k['l']),
          'close':            float(k['c']),
          'volume':           float(k['v']),
-         'close_time':       int(k['T']),
+         'open_time':        TimestampMicros(int(k['t']) * 1000),
+         'close_time':       TimestampMicros(int(k['T']) * 1000),
          'quote_volume':     float(k['q']),
          'trades':           int(k['n']),
          'taker_buy_base':   float(k['V']),
