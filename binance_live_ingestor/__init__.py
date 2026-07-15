@@ -81,8 +81,8 @@ def _table_ddl(interval: str) -> str:
             f"    close_time      TIMESTAMP,\n"
             f"    quote_volume    DOUBLE,\n"
             f"    trades          LONG,\n"
-            f"    taker_buy_base  DOUBLE,\n"
-            f"    taker_buy_quote DOUBLE\n"
+            f"    taker_buy_base_asset_volume  DOUBLE,\n"
+            f"    taker_buy_quote_asset_volume DOUBLE\n"
             f") TIMESTAMP(timestamp)\n"
             f"PARTITION BY DAY\n"
             f"WAL\n"
@@ -286,8 +286,8 @@ class Backfiller:
                          'close_time':       TimestampMicros(int(k[6]) * 1000),
                          'quote_volume':     float(k[7]),
                          'trades':           int(k[8]),
-                         'taker_buy_base':   float(k[9]),
-                         'taker_buy_quote':  float(k[10]),
+                         'taker_buy_base_asset_volume':   float(k[9]),
+                         'taker_buy_quote_asset_volume':  float(k[10]),
                          },
                     ))
 
@@ -344,8 +344,8 @@ def _kline_parser(event: dict):
          'close_time':       TimestampMicros(int(k['T']) * 1000),
          'quote_volume':     float(k['q']),
          'trades':           int(k['n']),
-         'taker_buy_base':   float(k['V']),
-         'taker_buy_quote':  float(k['Q']),
+         'taker_buy_base_asset_volume':   float(k['V']),
+         'taker_buy_quote_asset_volume':  float(k['Q']),
         },
         TimestampNanos(int(k['T']) * 1_000_000),  # designated ts = close_time
     )
