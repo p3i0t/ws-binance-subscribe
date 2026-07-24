@@ -298,6 +298,44 @@ class Backfiller:
         return results
 
 
+# ─── Gap Recovery ─────────────────────────────────────────────────────────────
+
+class GapRecoverer:
+    """Periodically backfill any symbols that fell behind (WS disconnects, etc)."""
+
+    def __init__(self, backfiller: Backfiller, symbols: list,
+                 interval_seconds: int, gap_threshold_ms: int):
+        self.backfiller = backfiller
+        self.symbols = symbols
+        self.interval_seconds = interval_seconds
+        self.gap_threshold_ms = gap_threshold_ms
+
+    async def run(self):
+        """Loop forever, checking for gaps every interval."""
+        # Wait before first check so the initial backfill has time to run
+        await asyncio.sleep(self.interval_seconds)
+        while True:
+            await self._check_and_recover()
+            await asyncio.sleep(self.interval_seconds)
+
+    async def _check_and_recover(self):
+        now_ms = int(time.time() * 1000)
+        latest = await get_latest_timestamps(self.backfiller.interval)
+        stale = []
+        for sym in self.symbols:
+            last = latest.get(sym)
+            if last is None or (now_ms - last) > self.gap_threshold_ms:
+                stale.append(sym)
+
+        if not stale:
+            return
+
+        logger.info("Gap recovery: %d/%d symbols behind, backfilling...",
+                     len(stale), len(self.symbols))
+        await self.backfiller.run(stale)
+        logger.info("Gap recovery complete.")
+
+
 # ─── Channel ──────────────────────────────────────────────────────────────────
 
 class Channel:
@@ -378,6 +416,44 @@ def _book_ticker_parser(event: dict):
          },
         TimestampNanos.now(),
     )
+
+
+# ─── Gap Recovery ─────────────────────────────────────────────────────────────
+
+class GapRecoverer:
+    """Periodically backfill any symbols that fell behind (WS disconnects, etc)."""
+
+    def __init__(self, backfiller: Backfiller, symbols: list,
+                 interval_seconds: int, gap_threshold_ms: int):
+        self.backfiller = backfiller
+        self.symbols = symbols
+        self.interval_seconds = interval_seconds
+        self.gap_threshold_ms = gap_threshold_ms
+
+    async def run(self):
+        """Loop forever, checking for gaps every interval."""
+        # Wait before first check so the initial backfill has time to run
+        await asyncio.sleep(self.interval_seconds)
+        while True:
+            await self._check_and_recover()
+            await asyncio.sleep(self.interval_seconds)
+
+    async def _check_and_recover(self):
+        now_ms = int(time.time() * 1000)
+        latest = await get_latest_timestamps(self.backfiller.interval)
+        stale = []
+        for sym in self.symbols:
+            last = latest.get(sym)
+            if last is None or (now_ms - last) > self.gap_threshold_ms:
+                stale.append(sym)
+
+        if not stale:
+            return
+
+        logger.info("Gap recovery: %d/%d symbols behind, backfilling...",
+                     len(stale), len(self.symbols))
+        await self.backfiller.run(stale)
+        logger.info("Gap recovery complete.")
 
 
 # ─── Channel Definitions ──────────────────────────────────────────────────────
@@ -602,6 +678,11 @@ def run(
         '--ttl-days',
         help='Auto-expire data older than N days (0 = disable).',
     ),
+    recovery_interval: int = typer.Option(
+        int(os.environ.get('RECOVERY_INTERVAL', '300')),
+        '--recovery-interval',
+        help='Seconds between gap-recovery checks (0 = disable).',
+    ),
 ):
     """Start ingesting Binance klines into QuestDB."""
     global QUESTDB_HOST, QUESTDB_HTTP_PORT, QUESTDB_USER, QUESTDB_PASSWORD
@@ -613,13 +694,14 @@ def run(
     asyncio.run(_async_run(
         market.value, symbols, interval.value,
         backfill_days, backfill_concurrency, backfill_limit, backfill,
-        ttl_days,
+        ttl_days, recovery_interval,
     ))
 
 
 async def _async_run(market, symbols, interval,
                      backfill_days, backfill_concurrency,
-                     backfill_limit, do_backfill, ttl_days=0):
+                     backfill_limit, do_backfill, ttl_days=0,
+                     recovery_interval=300):
     await ensure_table(interval, ttl_days=ttl_days)
 
     sym_list = (symbols.split(',') if symbols != 'all' else 'all')
@@ -630,18 +712,30 @@ async def _async_run(market, symbols, interval,
         feed = BinanceSpot(channels=[channel], symbols=sym_list)
     resolved = await feed.resolve_symbols()
 
+    rate_limiter = RateLimiter(weight_per_minute=2400)
+    backfiller = Backfiller(
+        klines_url=feed.klines_url,
+        interval=interval,
+        backfill_days=backfill_days,
+        rate_limiter=rate_limiter,
+        max_concurrency=backfill_concurrency,
+        limit=backfill_limit,
+    )
+
     tasks = []
     if do_backfill:
-        rate_limiter = RateLimiter(weight_per_minute=2400)
-        backfiller = Backfiller(
-            klines_url=feed.klines_url,
-            interval=interval,
-            backfill_days=backfill_days,
-            rate_limiter=rate_limiter,
-            max_concurrency=backfill_concurrency,
-            limit=backfill_limit,
-        )
         tasks.append(backfiller.run(resolved))
+
+    if recovery_interval > 0:
+        iv_ms = interval_ms(interval)
+        gap_threshold = iv_ms * 2  # behind by more than 2 bars = gap
+        recoverer = GapRecoverer(
+            backfiller=backfiller,
+            symbols=resolved,
+            interval_seconds=recovery_interval,
+            gap_threshold_ms=gap_threshold,
+        )
+        tasks.append(recoverer.run())
 
     handler = FeedHandler().add_feed(feed)
     tasks.append(handler.run())
