@@ -108,6 +108,13 @@ async def ensure_table(interval: str, ttl_days: int = 0):
     table = f"binance_klines_{interval}"
     ddl = _table_ddl(interval)
     async with aiohttp.ClientSession() as session:
+        drop_sql = f"DROP TABLE IF EXISTS {table}"
+        drop_params = {**_qdb_auth_params(), 'query': drop_sql}
+        async with session.get(_qdb_exec_url(), params=drop_params) as dr:
+            if dr.status != 200:
+                logger.warning("DROP TABLE failed (%d): %s", dr.status, await dr.text())
+            else:
+                logger.info("Dropped table '%s'.", table)
         params = {**_qdb_auth_params(), 'query': ddl}
         async with session.get(_qdb_exec_url(), params=params) as resp:
             if resp.status != 200:
